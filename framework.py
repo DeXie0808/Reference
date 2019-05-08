@@ -13,7 +13,7 @@ from basic_model.model import img_feature_ext, imghash, txthash
 import scipy.io as sio
 from utils.calc import calc_map, calc_neighbor, calc_loss
 
-class DCMH(object):
+class Model(object):
     def __init__(self, sess, cfg):
         self.dataset = split_data(cfg.data)
         self.sess = sess
