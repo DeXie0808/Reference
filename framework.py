@@ -27,6 +27,8 @@ class Model(object):
         self.bit = cfg.bit
         self.gamma = cfg.train.gamma
         self.eta = cfg.train.eta
+        self.lr = cfg.train.lr
+        self.lr_step = cfg.train.lr_step
         self.continue_train = cfg.continue_train
         self.prtrained_model = cfg.network.pretrain
         self.checkpoint = cfg.checkpoint
@@ -40,7 +42,6 @@ class Model(object):
 
 
     def _var(self):
-        self.var_lr = np.linspace(np.power(10, -1.5), np.power(10, -6.), cfg.train.epochs)
         self.var_F = np.random.randn(self.bit, self.num_train)
         self.var_G = np.random.randn(self.bit, self.num_train)
         self.var_B = np.sign(self.var_F + self.var_G)
@@ -63,16 +64,32 @@ class Model(object):
         # model structure
 
         ## feature = img_feature_ext(img=self.ph_image, is_training=self.ph_phase)
-
         feature = img_feature_ext(img=self.ph_image, pretrained=self.prtrained_model, name='vggf')
 
         self.cur_f_batch = imghash(feature, self.bit, name='img_hash')
         self.cur_g_batch = txthash(self.ph_text, self.bit, name='txt_hash')
 
 
+        theta_x = 1.0 / 2 * tf.matmul(tf.transpose(self.cur_f_batch), self.ph_G)
+        theta_y = 1.0 / 2 * tf.matmul(tf.transpose(self.ph_F), self.cur_g_batch)
 
-    def train_img_net(self, X, L, lr):
-        F = self.var_F
+        logloss_x = -tf.reduce_sum(tf.multiply(self.ph_S_x, theta_x) - tf.log(1.0 + tf.exp(theta_x)))
+        quantization_x = tf.reduce_sum(tf.pow((self.ph_b_batch - self.cur_f_batch), 2))
+        balance_x = tf.reduce_sum(tf.pow(tf.matmul(self.cur_f_batch, self.ph_ones_batch) + tf.matmul(self.ph_F_, self.ph_ones_), 2))
+        loss_x = tf.div(logloss_x + self.gamma * quantization_x + self.eta * balance_x, float(self.num_train * self.batchsize))
+
+        logloss_y = -tf.reduce_sum(tf.multiply(self.ph_S_y, theta_y) - tf.log(1.0 + tf.exp(theta_y)))
+        quantization_y = tf.reduce_sum(tf.pow((self.ph_b_batch - self.cur_g_batch), 2))
+        balance_y = tf.reduce_sum(tf.pow(tf.matmul(self.cur_g_batch, self.ph_ones_batch) + tf.matmul(self.ph_G_, self.ph_ones_), 2))
+        loss_y = tf.div(logloss_y + self.gamma * quantization_y + self.eta * balance_y, float(self.num_train * self.batchsize))
+
+        self.train_step_x = tf.train.AdamOptimizer(self.ph_lr, beta1=0.5).minimize(loss_x)
+        self.train_step_y = tf.train.AdamOptimizer(self.ph_lr, beta1=0.5).minimize(loss_y)
+
+
+
+    def train_img_net(self, X, L, var_F, var_G, var_B, lr):
+        F = var_F
         for iter in tqdm(range(int(self.num_train / self.batchsize))):
             index = np.random.permutation(self.num_train)
             ind = index[0: self.batchsize]
@@ -84,8 +101,8 @@ class Model(object):
             F[:, ind] = cur_f
 
             self.train_step_x.run(feed_dict={self.ph_S_x: S,
-                                             self.ph_G: self.var_G,
-                                             self.ph_b_batch: self.var_B[:, ind],
+                                             self.ph_G: var_G,
+                                             self.ph_b_batch: var_B[:, ind],
                                              self.ph_F_: F[:, unupdated_ind],
                                              self.ph_lr: lr,
                                              self.ph_phase: True,
@@ -93,8 +110,8 @@ class Model(object):
         return F
 
 
-    def train_txt_net(self, Y, L, lr):
-        G = self.var_G
+    def train_txt_net(self, Y, L, var_F, var_G, var_B, lr):
+        G = var_G
         for iter in tqdm(range(int(self.num_train / self.batchsize))):
             index = np.random.permutation(self.num_train)
             ind = index[0: self.batchsize]
@@ -107,8 +124,8 @@ class Model(object):
             G[:, ind] = cur_g
 
             self.train_step_y.run(feed_dict={self.ph_S_y: S,
-                                             self.ph_F: self.var_F,
-                                             self.ph_b_batch: self.var_B[:, ind],
+                                             self.ph_F: var_F,
+                                             self.ph_b_batch: var_B[:, ind],
                                              self.ph_G_: G[:, unupdated_ind],
                                              self.ph_lr: lr,
                                              self.ph_phase: True,
@@ -146,25 +163,12 @@ class Model(object):
 
 
     def train(self):
-        theta_x = 1.0 / 2 * tf.matmul(tf.transpose(self.cur_f_batch), self.ph_G)
-        theta_y = 1.0 / 2 * tf.matmul(tf.transpose(self.ph_F), self.cur_g_batch)
-
-        logloss_x = -tf.reduce_sum(tf.multiply(self.ph_S_x, theta_x) - tf.log(1.0 + tf.exp(theta_x)))
-        quantization_x = tf.reduce_sum(tf.pow((self.ph_b_batch - self.cur_f_batch), 2))
-        balance_x = tf.reduce_sum(tf.pow(tf.matmul(self.cur_f_batch, self.ph_ones_batch) + tf.matmul(self.ph_F_, self.ph_ones_), 2))
-        loss_x = tf.div(logloss_x + self.gamma * quantization_x + self.eta * balance_x, float(self.num_train * self.batchsize))
-
-        logloss_y = -tf.reduce_sum(tf.multiply(self.ph_S_y, theta_y) - tf.log(1.0 + tf.exp(theta_y)))
-        quantization_y = tf.reduce_sum(tf.pow((self.ph_b_batch - self.cur_g_batch), 2))
-        balance_y = tf.reduce_sum(tf.pow(tf.matmul(self.cur_g_batch, self.ph_ones_batch) + tf.matmul(self.ph_G_, self.ph_ones_), 2))
-        loss_y = tf.div(logloss_y + self.gamma * quantization_y + self.eta * balance_y, float(self.num_train * self.batchsize))
-
-        self.train_step_x = tf.train.GradientDescentOptimizer(self.ph_lr).minimize(loss_x)
-        self.train_step_y = tf.train.GradientDescentOptimizer(self.ph_lr).minimize(loss_y)
-
-
         exclusions = ['img_hash', 'txt_hash', 'counter']
         variables_to_restore = []
+
+        # for var in tf.trainable_variables():
+        #     print(var.op.name)
+
         for var in tf.trainable_variables():
             excluded = False
             for exclusion in exclusions:
@@ -173,9 +177,9 @@ class Model(object):
             if not excluded:
                 variables_to_restore.append(var)
 
-
         ## saver_restore = tf.train.Saver(var_list=variables_to_restore)
         saver = tf.train.Saver(max_to_keep=1, var_list=tf.global_variables())
+
         self.sess.run(tf.global_variables_initializer())
 
         if not self.continue_train:
@@ -191,11 +195,13 @@ class Model(object):
 
 
         for epoch in range(self.epochs):
-            lr = self.var_lr[epoch]
+            decay = 0.5 ** (sum(epoch >= np.array(self.lr_step)))
+            lr = self.lr * decay
+
             # update F
-            self.var_F = self.train_img_net(self.dataset.train_x, self.dataset.train_L, lr)
+            self.var_F = self.train_img_net(self.dataset.train_x, self.dataset.train_L, self.var_F, self.var_G, self.var_B, lr)
             # update G
-            self.var_G = self.train_txt_net(self.dataset.train_y, self.dataset.train_L, lr)
+            self.var_G = self.train_txt_net(self.dataset.train_y, self.dataset.train_L, self.var_F, self.var_G, self.var_B, lr)
             # update B
             self.var_B = np.sign(self.var_F + self.var_G)
             # calculate loss
