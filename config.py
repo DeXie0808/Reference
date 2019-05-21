@@ -1,6 +1,3 @@
-import os
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
-os.environ["CUDA_VISIBLE_DEVICES"] = '4'
 from easydict import EasyDict
 
 
@@ -40,7 +37,9 @@ cfg.data.crop_size = 224
 
 # train configure
 cfg.train.batch_size = 128
-cfg.train.epochs = 500
+cfg.train.epochs = 200
+cfg.train.lr = 1e-4
+cfg.train.lr_step = [30, 60]
 cfg.train.gamma = 1
 cfg.train.eta = 1
 
